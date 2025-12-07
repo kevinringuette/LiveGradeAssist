@@ -122,7 +122,8 @@ def mock_fetch_master_schedule(section_id: str) -> pd.DataFrame:
 # --- Session State Management ---
 def initialize_session_state():
     """Initializes session state with default values."""
-    if "initialized":
+    # Avoid reinitializing state on every rerun
+    if st.session_state.get("initialized"):
         return
 
     st.session_state.teacher = None
