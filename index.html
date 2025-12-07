@@ -977,27 +977,33 @@
         }
       };
 
-      const finishRecording = async () => {
-        if (!mediaRecorderRef.current) return;
-
-        if (currentRecordingChunksRef.current.length > 0) {
-          await sendChunkToWebhook();
-        }
-
-        if (mediaStreamRef.current) {
-          mediaStreamRef.current.getTracks().forEach(track => track.stop());
-          mediaStreamRef.current = null;
-        }
-
-        setIsRecording(false);
-        setIsPaused(false);
-        mediaRecorderRef.current = null;
-
-        console.log(`Recording stopped. Total segments: ${completedRecordingsRef.current.length}`);
-      };
-
       const processCurrentAudioChunk = () => {
         sendChunkToWebhook();
+      };
+
+      const stopRecording = async () => {
+        if (!isRecording) return;
+
+        try {
+          await sendChunkToWebhook({ startNextSegment: false });
+        } catch (err) {
+          console.error('Error stopping recording:', err);
+          setMicError('Recording error. Please try again.');
+        } finally {
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            try { mediaRecorderRef.current.stop(); } catch { }
+          }
+          if (mediaStreamRef.current) {
+            mediaStreamRef.current.getTracks().forEach(track => track.stop());
+            mediaStreamRef.current = null;
+          }
+
+          mediaRecorderRef.current = null;
+          setIsRecording(false);
+          setIsPaused(false);
+
+          console.log('Recording stopped.');
+        }
       };
 
       const downloadRecording = (recordingData) => {
@@ -1202,7 +1208,7 @@
         }
       };
 
-      const sendChunkToWebhook = async () => {
+      const sendChunkToWebhook = async ({ startNextSegment = true } = {}) => {
         if (!mediaRecorderRef.current || mediaRecorderRef.current.state !== 'recording') {
           console.log('No active recording');
           setTranscript(prev => [...prev, {
@@ -1300,7 +1306,7 @@
         ]);
         setPendingCount(prev => prev + 1);
 
-        if (isRecording && !isPaused) {
+        if (isRecording && !isPaused && startNextSegment) {
           startNewRecordingSegment();
         }
 
