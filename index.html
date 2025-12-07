@@ -585,8 +585,6 @@
       const recordingStartTimeRef = useRef(null);
       const [recordingSegments, setRecordingSegments] = useState([]);
 
-      // Rubric-click grading state
-      const [gradingMode, setGradingMode] = useState('voice'); // 'voice' or 'rubric-click'
       const [currentGradingStudentId, setCurrentGradingStudentId] = useState(null);
 
 
@@ -798,25 +796,17 @@
         }
       };
 
-      const startGradingSession = async (mode = 'voice') => {
+      const startGradingSession = async () => {
         if (!assignmentName.trim()) {
           alert('Please enter an assignment name.');
           return;
         }
         setSessionId(Date.now().toString());
-        setGradingMode(mode);
-
-        if (mode === 'rubric-click') {
-          // For rubric-click mode, set the first ungraded student as current
-          const firstStudent = students.find(s => !grades[s.id]?.completed);
-          if (firstStudent) {
-            setCurrentGradingStudentId(firstStudent.id);
-          }
-          setStep('rubric-click-grading');
-        } else {
-          // Voice grading mode (existing behavior)
-          setStep('grading');
+        const firstStudent = students.find(s => !grades[s.id]?.completed) || students[0];
+        if (firstStudent) {
+          setCurrentGradingStudentId(firstStudent.id);
         }
+        setStep('grading');
       };
 
       const loadSavedRubrics = async () => {
@@ -1004,6 +994,10 @@
         mediaRecorderRef.current = null;
 
         console.log(`Recording stopped. Total segments: ${completedRecordingsRef.current.length}`);
+      };
+
+      const processCurrentAudioChunk = () => {
+        sendChunkToWebhook();
       };
 
       const downloadRecording = (recordingData) => {
@@ -2058,7 +2052,7 @@
         return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
       };
 
-      // Helper functions for rubric-click grading
+      // Helper functions for rubric scoring shortcuts
       const calculateRubricScoreOptions = (maxPoints) => {
         if (maxPoints <= 0) return [0];
 
@@ -2603,65 +2597,22 @@
                   </div>
                 </div>
 
-                <div className="mb-6">
-                  <label className="block text-sm font-medium text-pacifica-navy mb-3">Select Grading Mode</label>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <button
-                      onClick={() => setGradingMode('voice')}
-                      className={`p-6 rounded-lg border-2 transition-all text-left ${gradingMode === 'voice'
-                        ? 'border-pacifica-orange bg-pacifica-orange/10 shadow-md'
-                        : 'border-pacifica-gray hover:border-pacifica-orange hover:bg-pacifica-orange/5'
-                        }`}
-                    >
-                      <div className="flex items-start gap-4">
-                        <div className={`w-12 h-12 rounded-full flex items-center justify-center ${gradingMode === 'voice' ? 'bg-pacifica-orange text-white' : 'bg-pacifica-gray text-pacifica-navy'
-                          }`}>
-                          <Icon name="Mic" className="w-6 h-6" />
-                        </div>
-                        <div className="flex-1">
-                          <h3 className="font-semibold text-pacifica-navy text-lg mb-1">Voice Grading</h3>
-                          <p className="text-sm text-pacifica-slate">
-                            Record your voice feedback for each student. Transcripts are automatically processed to extract grades.
-                          </p>
-                        </div>
-                        {gradingMode === 'voice' && (
-                          <Icon name="CheckCircle" className="w-6 h-6 text-pacifica-orange" />
-                        )}
-                      </div>
-                    </button>
-
-                    <button
-                      onClick={() => setGradingMode('rubric-click')}
-                      className={`p-6 rounded-lg border-2 transition-all text-left ${gradingMode === 'rubric-click'
-                        ? 'border-pacifica-orange bg-pacifica-orange/10 shadow-md'
-                        : 'border-pacifica-gray hover:border-pacifica-orange hover:bg-pacifica-orange/5'
-                        }`}
-                    >
-                      <div className="flex items-start gap-4">
-                        <div className={`w-12 h-12 rounded-full flex items-center justify-center ${gradingMode === 'rubric-click' ? 'bg-pacifica-orange text-white' : 'bg-pacifica-gray text-pacifica-navy'
-                          }`}>
-                          <Icon name="MousePointer" className="w-6 h-6" />
-                        </div>
-                        <div className="flex-1">
-                          <h3 className="font-semibold text-pacifica-navy text-lg mb-1">Click Rubric Grading</h3>
-                          <p className="text-sm text-pacifica-slate">
-                            Quickly grade students by clicking pre-calculated score options for each rubric item.
-                          </p>
-                        </div>
-                        {gradingMode === 'rubric-click' && (
-                          <Icon name="CheckCircle" className="w-6 h-6 text-pacifica-orange" />
-                        )}
-                      </div>
-                    </button>
-                  </div>
+                <div className="mb-6 p-4 bg-pacifica-orange/10 rounded-lg border border-pacifica-orange/30">
+                  <h3 className="font-semibold text-pacifica-navy mb-1 flex items-center gap-2">
+                    <Icon name="Sparkles" className="w-5 h-5" />
+                    Unified grading
+                  </h3>
+                  <p className="text-sm text-pacifica-slate">
+                    Record feedback, click rubric scores, and view matched PDFs in the same workspace. If no PDFs are uploaded, the PDF panel will show guidance instead.
+                  </p>
                 </div>
 
                 <button
-                  onClick={() => startGradingSession(gradingMode)}
+                  onClick={startGradingSession}
                   disabled={!assignmentName.trim()}
                   className="w-full py-3 bg-pacifica-orange text-white font-semibold rounded-lg hover:bg-pacifica-tangerine disabled:bg-pacifica-gray disabled:cursor-not-allowed transition-colors"
                 >
-                  Start {gradingMode === 'voice' ? 'Voice' : 'Click Rubric'} Grading Session
+                  Start Grading Session
                 </button>
               </div>
             </div>
@@ -3186,159 +3137,6 @@
         );
       }
 
-      if (step === 'rubric-click-grading') {
-        const currentGradingStudent = students.find(s => s.id === currentGradingStudentId);
-        const currentGrade = currentGradingStudent ? grades[currentGradingStudentId] || { scores: {}, comments: '', completed: false } : null;
-        const allGraded = students.every(s => grades[s.id]?.completed);
-        const gradedCount = students.filter(s => grades[s.id]?.completed).length;
-
-        // PDF Match Check
-        const pdfMatch = currentGradingStudent ? uploadedPDFs.find(p => p.studentId === currentGradingStudent.studentId && p.method !== 'Unmatched') : null;
-
-        // Navigation Helpers
-        const currentIndex = currentGradingStudent ? orderedStudents.findIndex(s => s.id === currentGradingStudent.id) : -1;
-        const prevStudent = currentIndex > 0 ? orderedStudents[currentIndex - 1] : null;
-        const nextStudent = currentIndex !== -1 && currentIndex < orderedStudents.length - 1 ? orderedStudents[currentIndex + 1] : null;
-
-        if (pdfMatch && currentGradingStudent) {
-          return (
-            <div className="flex h-screen overflow-hidden bg-gray-100">
-              <div className="flex-1 relative border-r border-gray-300 bg-gray-200 overflow-hidden">
-                <PDFViewer
-                  file={pdfMatch.file}
-                  pageNumber={pdfPage}
-                  scale={pdfScale}
-                  onPageChange={setPdfPage}
-                  onScaleChange={setPdfScale}
-                />
-                <div className="absolute top-4 left-4 z-20">
-                  <button
-                    onClick={() => {
-                      if (confirm('Exit grading session?')) {
-                        setStep('assignment-setup');
-                      }
-                    }}
-                    className="p-2 bg-white rounded-full shadow-md hover:bg-gray-100 text-gray-600 flex items-center justify-center transition-colors"
-                    title="Exit"
-                  >
-                    <Icon name="ArrowLeft" className="w-5 h-5" />
-                  </button>
-                </div>
-              </div>
-
-              <div className="w-[450px] flex flex-col bg-white shadow-xl z-10 h-full border-l border-gray-200">
-                <div className="p-4 border-b bg-gray-50 flex items-center justify-between shrink-0">
-                  <button
-                    onClick={() => prevStudent && setCurrentGradingStudentId(prevStudent.id)}
-                    disabled={!prevStudent}
-                    className="p-2 hover:bg-white rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-pacifica-navy"
-                  >
-                    <Icon name="ChevronLeft" className="w-6 h-6" />
-                  </button>
-
-                  <div className="text-center">
-                    <h3 className="font-bold text-pacifica-navy truncate max-w-[200px]">{currentGradingStudent.name}</h3>
-                    <p className="text-xs text-pacifica-slate">
-                      {currentIndex + 1} of {students.length}
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={() => nextStudent && setCurrentGradingStudentId(nextStudent.id)}
-                    disabled={!nextStudent}
-                    className="p-2 hover:bg-white rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-pacifica-navy"
-                  >
-                    <Icon name="ChevronRight" className="w-6 h-6" />
-                  </button>
-                </div>
-
-                {renderVoiceContent(true)}
-              </div>
-            </div>
-          );
-        }
-
-        return (
-          <div className="min-h-screen bg-pacifica-gray bg-opacity-10 flex">
-            <div className="w-80 bg-white border-r border-pacifica-gray flex flex-col h-screen fixed left-0 top-0 bottom-0 z-10">
-              <div className="p-4 border-b border-pacifica-gray bg-gradient-to-r from-pacifica-navy to-pacifica-midnight shrink-0">
-                <h2 className="text-lg font-bold text-white">{assignmentName}</h2>
-                <p className="text-sm text-pacifica-gray">Click Rubric Grading</p>
-                <p className="text-xs text-white mt-1">{gradedCount}/{students.length} graded</p>
-                <button
-                  onClick={() => setStep('review')}
-                  className="mt-3 w-full px-3 py-2 bg-pacifica-orange text-white text-sm font-medium rounded-lg hover:bg-pacifica-tangerine transition-colors flex items-center justify-center gap-2"
-                >
-                  <Icon name="ClipboardCheck" className="w-4 h-4" />
-                  Review & Upload ({gradedCount})
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                {orderedStudents.map((student) => {
-                  const sg = grades[student.id] || { scores: {}, comments: '', completed: false };
-                  const total = calculateTotal(sg);
-                  const isCurrentStudent = currentGradingStudentId === student.id;
-
-                  return (
-                    <button
-                      key={student.id}
-                      onClick={() => setCurrentGradingStudentId(student.id)}
-                      className={`w-full text-left p-3 rounded-lg border-2 transition-all ${isCurrentStudent
-                        ? 'border-pacifica-orange bg-pacifica-orange/10 shadow-md'
-                        : sg.completed
-                          ? 'border-green-300 bg-green-50 hover:border-green-400'
-                          : 'border-pacifica-gray bg-white hover:border-pacifica-orange'
-                        }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 min-w-0 flex-1">
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0 ${sg.completed ? 'bg-green-600 text-white' : 'bg-pacifica-gray text-pacifica-navy'
-                            }`}>
-                            {sg.completed ? <Icon name="Check" className="w-4 h-4" /> : getInitials(student.name)}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <p className="font-medium text-pacifica-navy text-sm truncate">{student.name}</p>
-                            <p className="text-xs text-pacifica-slate truncate">ID: {student.studentId}</p>
-                          </div>
-                        </div>
-                        <div className="text-right ml-2">
-                          {sg.completed ? (
-                            <>
-                              <p className="text-lg font-bold text-pacifica-navy">{total}</p>
-                              <p className="text-xs text-pacifica-slate">/{calculateMaxTotal()}</p>
-                            </>
-                          ) : (
-                            <p className="text-xs text-pacifica-slate">Not graded</p>
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="p-3 border-t border-pacifica-gray bg-pacifica-gray/20 shrink-0">
-                <button
-                  onClick={() => {
-                    if (confirm('Exit grading session? Unsaved grades will be lost.')) {
-                      setStep('assignment-setup');
-                    }
-                  }}
-                  className="w-full px-3 py-2 bg-pacifica-slate text-white font-medium rounded-lg hover:bg-pacifica-midnight transition-colors text-sm"
-                >
-                  Exit Session
-                </button>
-              </div>
-            </div>
-
-            <div className="flex-1 ml-80 min-h-screen">
-              {renderVoiceContent(false)}
-            </div>
-          </div>
-        );
-      }
-
       if (step === 'review') {
         const completedCount = Object.values(grades).filter(g => g.completed).length;
         const maxTotal = calculateMaxTotal();
@@ -3368,7 +3166,7 @@
                     ) : (
                       <div className="flex gap-3">
                         <button
-                          onClick={() => setStep(gradingMode === 'rubric-click' ? 'rubric-click-grading' : 'grading')}
+                          onClick={() => setStep('grading')}
                           className="btn btn-outline"
                         >
                           Back to Grading
