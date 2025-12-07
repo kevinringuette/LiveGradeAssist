@@ -357,6 +357,109 @@
         reader.readAsDataURL(blob);
       });
 
+    const PDFViewer = ({ file, pageNumber, scale, onPageChange, onScaleChange }) => {
+      const canvasRef = useRef(null);
+      const [numPages, setNumPages] = useState(null);
+      const [error, setError] = useState(null);
+      const [isLoading, setIsLoading] = useState(false);
+
+      useEffect(() => {
+        if (!file) return;
+
+        let cancelled = false;
+        let objectUrl = null;
+        const loadAndRender = async () => {
+          setIsLoading(true);
+          setError(null);
+          try {
+            const url = typeof file === 'string' ? file : (objectUrl = URL.createObjectURL(file));
+            const pdf = await pdfjsLib.getDocument(url).promise;
+            if (cancelled) return;
+
+            setNumPages(pdf.numPages);
+
+            if (pageNumber > pdf.numPages) {
+              onPageChange?.(pdf.numPages);
+            }
+
+            const page = await pdf.getPage(Math.min(pageNumber, pdf.numPages));
+            if (cancelled) return;
+
+            const viewport = page.getViewport({ scale });
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+            const context = canvas.getContext('2d');
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+
+            const renderContext = { canvasContext: context, viewport };
+            await page.render(renderContext).promise;
+            pdf.cleanup();
+          } catch (err) {
+            if (!cancelled) {
+              console.error('PDF render error:', err);
+              setError('Unable to render PDF. Try re-uploading the file.');
+            }
+          } finally {
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+            if (!cancelled) setIsLoading(false);
+          }
+        };
+
+        loadAndRender();
+        return () => { cancelled = true; };
+      }, [file, pageNumber, scale, onPageChange]);
+
+      return (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between text-sm text-pacifica-slate">
+            <div className="flex items-center gap-2">
+              <Icon name="FileText" className="w-4 h-4" />
+              {numPages ? <span>Page {Math.min(pageNumber, numPages)} of {numPages}</span> : <span>Loading…</span>}
+            </div>
+          <div className="flex items-center gap-2">
+            <button
+              className="btn btn-outline"
+              disabled={!numPages || pageNumber <= 1}
+                onClick={() => onPageChange?.(Math.max(1, pageNumber - 1))}
+              >
+                Prev
+              </button>
+              <button
+                className="btn btn-outline"
+                disabled={!numPages || pageNumber >= numPages}
+                onClick={() => onPageChange?.(Math.min(numPages, pageNumber + 1))}
+              >
+                Next
+              </button>
+              <select
+                className="border border-pacifica-gray rounded-md px-2 py-1 text-sm"
+              value={scale}
+              onChange={(e) => onScaleChange?.(Number(e.target.value))}
+            >
+              {[0.5, 0.75, 1, 1.25, 1.5, 2].map((s) => (
+                <option key={s} value={s}>{s}x</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="border border-gray-200 rounded-lg overflow-auto bg-white relative">
+          {isLoading && (
+            <div className="absolute inset-0 bg-white bg-opacity-80 flex items-center justify-center text-sm text-pacifica-slate">
+              Rendering PDF…
+              </div>
+            )}
+            {error ? (
+              <div className="p-6 text-center text-red-600 text-sm">{error}</div>
+            ) : (
+              <canvas ref={canvasRef} className="w-full" />
+            )}
+          </div>
+        </div>
+      );
+    };
+
     function chunk(arr, size = 10) {
       const out = [];
       for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
@@ -421,6 +524,7 @@
       const [editingField, setEditingField] = useState(null);
       const [sessionId, setSessionId] = useState(null);
       const [micError, setMicError] = useState(null);
+      const [processingAudio, setProcessingAudio] = useState(false);
 
       const [pendingCount, setPendingCount] = useState(0);
       const chunkIdRef = useRef(0);
@@ -451,6 +555,45 @@
         setPdfPage(1);
         setPdfScale(1.0);
       }, [currentGradingStudentId]);
+
+      const currentGradingStudent = useMemo(
+        () => students.find((s) => s.studentId === currentGradingStudentId || s.id === currentGradingStudentId) || null,
+        [students, currentGradingStudentId]
+      );
+
+      const pdfMatch = useMemo(() => {
+        if (!currentGradingStudent) return null;
+        return uploadedPDFs.find(
+          (p) => String(p.studentId) === String(currentGradingStudent.studentId) && p.method !== 'Unmatched'
+        ) || null;
+      }, [uploadedPDFs, currentGradingStudent]);
+
+      const currentGrade = currentGradingStudent
+        ? grades[currentGradingStudent.id] || { scores: {}, comments: '', completed: false }
+        : null;
+
+      const studentList = orderedStudents.length > 0 ? orderedStudents : students;
+      const currentIndex = currentGradingStudent ? studentList.findIndex((s) => s.id === currentGradingStudent.id) : -1;
+      const prevStudent = currentIndex > 0 ? studentList[currentIndex - 1] : null;
+      const nextStudent = currentIndex !== -1 && currentIndex < studentList.length - 1 ? studentList[currentIndex + 1] : null;
+
+      // Automatically restart a fresh recording segment when switching students in PDF mode
+      useEffect(() => {
+        const restartForPdf = async () => {
+          if (!pdfMatch || !micSupported || processingAudio) return;
+
+          if (isRecording) {
+            // Finish the current segment and start a fresh one for the new student
+            await sendChunkToWebhook({ startNextSegment: true, forceStartNext: true });
+            setIsPaused(false);
+          } else {
+            await startRecording();
+          }
+        };
+
+        restartForPdf();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [currentGradingStudentId, pdfMatch]);
 
       // PDF Matching Utilities
       const parsePDFFilename = (filename) => {
@@ -530,6 +673,25 @@
         setShowPDFMatchReview(true);
       };
 
+      const removeUploadedPDF = (filename) => {
+        setUploadedPDFs(prev => prev.filter(p => p.file.name !== filename));
+      };
+
+      const updatePDFMatch = (filename, studentId) => {
+        setUploadedPDFs(prev => prev.map(p => {
+          if (p.file.name !== filename) return p;
+
+          const matchedStudent = students.find((s) => String(s.studentId) === String(studentId) || String(s.id) === String(studentId));
+
+          return {
+            ...p,
+            studentId: studentId || null,
+            student: matchedStudent || null,
+            method: studentId ? 'Manual Selection' : 'Unmatched'
+          };
+        }));
+      };
+
       // Copy selection to clipboard
       const copySelectionToClipboard = () => {
         if (selectedRow !== null) {
@@ -585,8 +747,6 @@
       const recordingStartTimeRef = useRef(null);
       const [recordingSegments, setRecordingSegments] = useState([]);
 
-      // Rubric-click grading state
-      const [gradingMode, setGradingMode] = useState('voice'); // 'voice' or 'rubric-click'
       const [currentGradingStudentId, setCurrentGradingStudentId] = useState(null);
 
 
@@ -798,25 +958,17 @@
         }
       };
 
-      const startGradingSession = async (mode = 'voice') => {
+      const startGradingSession = async () => {
         if (!assignmentName.trim()) {
           alert('Please enter an assignment name.');
           return;
         }
         setSessionId(Date.now().toString());
-        setGradingMode(mode);
-
-        if (mode === 'rubric-click') {
-          // For rubric-click mode, set the first ungraded student as current
-          const firstStudent = students.find(s => !grades[s.id]?.completed);
-          if (firstStudent) {
-            setCurrentGradingStudentId(firstStudent.id);
-          }
-          setStep('rubric-click-grading');
-        } else {
-          // Voice grading mode (existing behavior)
-          setStep('grading');
+        const firstStudent = students.find(s => !grades[s.id]?.completed) || students[0];
+        if (firstStudent) {
+          setCurrentGradingStudentId(firstStudent.id);
         }
+        setStep('grading');
       };
 
       const loadSavedRubrics = async () => {
@@ -935,12 +1087,24 @@
         return filtered;
       };
 
+      const micSupported = !!(navigator?.mediaDevices?.getUserMedia && window.MediaRecorder);
+
       const startRecording = async () => {
         try {
+          if (!micSupported) {
+            throw new Error('Browser does not support microphone recording.');
+          }
+
+          if (isRecording) {
+            return;
+          }
+
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
           mediaStreamRef.current = stream;
 
-          startNewRecordingSegment();
+          if (!startNewRecordingSegment()) {
+            throw new Error('Unable to start recording segment.');
+          }
 
           setIsRecording(true);
           setIsPaused(false);
@@ -950,27 +1114,39 @@
           console.log('Recording started - speak and press SPACEBAR to finish this segment and start next');
         } catch (err) {
           console.error('Microphone error:', err);
-          setMicError('Microphone access denied');
+          setMicError(err?.message || 'Microphone access denied');
+          setIsRecording(false);
         }
       };
 
       const startNewRecordingSegment = () => {
-        if (!mediaStreamRef.current) return;
+        if (!mediaStreamRef.current) return false;
 
-        const recorder = new MediaRecorder(mediaStreamRef.current, { mimeType: 'audio/webm' });
-        mediaRecorderRef.current = recorder;
-        currentRecordingChunksRef.current = [];
-        recordingStartTimeRef.current = Date.now();
-
-        recorder.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0) {
-            currentRecordingChunksRef.current.push(e.data);
-            console.log('Received chunk:', e.data.size, 'bytes. Total chunks:', currentRecordingChunksRef.current.length, 'Total size:', currentRecordingChunksRef.current.reduce((sum, chunk) => sum + chunk.size, 0), 'bytes');
+        try {
+          if (typeof MediaRecorder === 'undefined') {
+            throw new Error('MediaRecorder is unavailable in this browser.');
           }
-        };
 
-        recorder.start(1000);
-        console.log('New recording segment started with 1s timeslice');
+          const recorder = new MediaRecorder(mediaStreamRef.current, { mimeType: 'audio/webm' });
+          mediaRecorderRef.current = recorder;
+          currentRecordingChunksRef.current = [];
+          recordingStartTimeRef.current = Date.now();
+
+          recorder.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) {
+              currentRecordingChunksRef.current.push(e.data);
+              console.log('Received chunk:', e.data.size, 'bytes. Total chunks:', currentRecordingChunksRef.current.length, 'Total size:', currentRecordingChunksRef.current.reduce((sum, chunk) => sum + chunk.size, 0), 'bytes');
+            }
+          };
+
+          recorder.start(1000);
+          console.log('New recording segment started with 1s timeslice');
+          return true;
+        } catch (err) {
+          console.error('Failed to create MediaRecorder:', err);
+          setMicError('Unable to start microphone recording. Please check your browser permissions.');
+          return false;
+        }
       };
 
       const pauseRecording = () => {
@@ -987,24 +1163,51 @@
         }
       };
 
-      const finishRecording = async () => {
-        if (!mediaRecorderRef.current) return;
-
-        if (currentRecordingChunksRef.current.length > 0) {
-          await sendChunkToWebhook();
-        }
-
-        if (mediaStreamRef.current) {
-          mediaStreamRef.current.getTracks().forEach(track => track.stop());
-          mediaStreamRef.current = null;
-        }
-
-        setIsRecording(false);
-        setIsPaused(false);
-        mediaRecorderRef.current = null;
-
-        console.log(`Recording stopped. Total segments: ${completedRecordingsRef.current.length}`);
+      const processCurrentAudioChunk = () => {
+        if (processingAudio) return;
+        sendChunkToWebhook();
       };
+
+      const stopRecording = async () => {
+        if (!isRecording) return;
+
+        const cleanUpMedia = () => {
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            try { mediaRecorderRef.current.stop(); } catch { }
+          }
+          if (mediaStreamRef.current) {
+            mediaStreamRef.current.getTracks().forEach(track => track.stop());
+            mediaStreamRef.current = null;
+          }
+
+          mediaRecorderRef.current = null;
+        };
+
+        try {
+          await sendChunkToWebhook({ startNextSegment: false });
+        } catch (err) {
+          console.error('Error stopping recording:', err);
+          setMicError('Recording error. Please try again.');
+        } finally {
+          cleanUpMedia();
+          setIsRecording(false);
+          setIsPaused(false);
+
+          console.log('Recording stopped.');
+        }
+      };
+
+      // Stop media devices if user navigates away from grading view
+      useEffect(() => {
+        return () => {
+          if (mediaStreamRef.current) {
+            mediaStreamRef.current.getTracks().forEach(track => track.stop());
+          }
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            try { mediaRecorderRef.current.stop(); } catch { }
+          }
+        };
+      }, []);
 
       const downloadRecording = (recordingData) => {
         const url = URL.createObjectURL(recordingData.blob);
@@ -1208,109 +1411,115 @@
         }
       };
 
-      const sendChunkToWebhook = async () => {
-        if (!mediaRecorderRef.current || mediaRecorderRef.current.state !== 'recording') {
-          console.log('No active recording');
-          setTranscript(prev => [...prev, {
-            id: Date.now(),
-            text: '⚠️ Recording not active. Please start recording first.',
-            isProcessing: false
-          }]);
-          return;
-        }
+      const sendChunkToWebhook = async ({ startNextSegment = true, forceStartNext = false } = {}) => {
+        if (processingAudio) return;
+        setProcessingAudio(true);
+        try {
+          if (!mediaRecorderRef.current || mediaRecorderRef.current.state !== 'recording') {
+            console.log('No active recording');
+            setTranscript(prev => [...prev, {
+              id: Date.now(),
+              text: '⚠️ Recording not active. Please start recording first.',
+              isProcessing: false
+            }]);
+            return;
+          }
 
-        const chunkNum = ++chunkIdRef.current;
-        const segmentId = Date.now();
-        const recordingDuration = Date.now() - recordingStartTimeRef.current;
+          const chunkNum = ++chunkIdRef.current;
+          const segmentId = Date.now();
+          const recordingDuration = Date.now() - recordingStartTimeRef.current;
 
-        console.log(`[Segment ${chunkNum}] Stopping current recording (duration: ${(recordingDuration / 1000).toFixed(1)}s)...`);
+          console.log(`[Segment ${chunkNum}] Stopping current recording (duration: ${(recordingDuration / 1000).toFixed(1)}s)...`);
 
-        const currentRecorder = mediaRecorderRef.current;
+          const currentRecorder = mediaRecorderRef.current;
 
-        await new Promise((resolve) => {
-          currentRecorder.onstop = () => {
-            console.log(`[Segment ${chunkNum}] Recorder stopped. Collected ${currentRecordingChunksRef.current.length} chunks`);
-            resolve();
+          await new Promise((resolve) => {
+            currentRecorder.onstop = () => {
+              console.log(`[Segment ${chunkNum}] Recorder stopped. Collected ${currentRecordingChunksRef.current.length} chunks`);
+              resolve();
+            };
+            currentRecorder.stop();
+          });
+
+          await new Promise(resolve => setTimeout(resolve, 100));
+
+          const chunksToSend = [...currentRecordingChunksRef.current];
+
+          if (chunksToSend.length === 0) {
+            console.log(`[Segment ${chunkNum}] No audio chunks collected!`);
+            setTranscript(prev => [...prev, {
+              id: Date.now(),
+              text: '⚠️ No audio recorded. Speak for a few seconds before pressing spacebar.',
+              isProcessing: false
+            }]);
+
+            if (isRecording && !isPaused) {
+              startNewRecordingSegment();
+            }
+            return;
+          }
+
+          const blob = new Blob(chunksToSend, { type: 'audio/webm' });
+
+          console.log(`[Segment ${chunkNum}] Created blob from ${chunksToSend.length} chunks, total size: ${blob.size} bytes (${Math.round(blob.size / 1024)}KB)`);
+
+          if (blob.size < 5000) {
+            console.log(`[Segment ${chunkNum}] Recording too small (${blob.size} bytes), skipping...`);
+            setTranscript(prev => [...prev, {
+              id: Date.now(),
+              text: `⚠️ Recording too short (${(recordingDuration / 1000).toFixed(1)}s). Speak longer before pressing spacebar.`,
+              isProcessing: false
+            }]);
+
+            if (isRecording && !isPaused) {
+              startNewRecordingSegment();
+            }
+            return;
+          }
+
+          const recordingData = {
+            id: segmentId,
+            blob: blob,
+            chunkNumber: chunkNum,
+            timestamp: new Date().toLocaleTimeString(),
+            duration: recordingDuration,
+            size: blob.size,
+            studentName: null
           };
-          currentRecorder.stop();
-        });
 
-        await new Promise(resolve => setTimeout(resolve, 100));
+          completedRecordingsRef.current.push(recordingData);
 
-        const chunksToSend = [...currentRecordingChunksRef.current];
-
-        if (chunksToSend.length === 0) {
-          console.log(`[Segment ${chunkNum}] No audio chunks collected!`);
-          setTranscript(prev => [...prev, {
-            id: Date.now(),
-            text: '⚠️ No audio recorded. Speak for a few seconds before pressing spacebar.',
-            isProcessing: false
+          setRecordingSegments(prev => [...prev, {
+            id: segmentId,
+            chunkNumber: chunkNum,
+            timestamp: recordingData.timestamp,
+            duration: recordingDuration,
+            size: blob.size,
+            studentName: null,
+            status: 'processing'
           }]);
 
-          if (isRecording && !isPaused) {
+          const entryId = Date.now();
+          setTranscript(prev => [
+            {
+              id: entryId,
+              text: `⏳ Processing segment ${chunkNum}... (${Math.round(blob.size / 1024)}KB, ${(recordingDuration / 1000).toFixed(1)}s)`,
+              isProcessing: true,
+              segmentNumber: chunkNum,
+              timestamp: new Date().toLocaleTimeString()
+            },
+            ...prev
+          ]);
+          setPendingCount(prev => prev + 1);
+
+          if (isRecording && (forceStartNext || !isPaused) && startNextSegment) {
             startNewRecordingSegment();
           }
-          return;
+
+          processSegmentWithN8N(segmentId, chunkNum, blob, entryId, recordingDuration);
+        } finally {
+          setProcessingAudio(false);
         }
-
-        const blob = new Blob(chunksToSend, { type: 'audio/webm' });
-
-        console.log(`[Segment ${chunkNum}] Created blob from ${chunksToSend.length} chunks, total size: ${blob.size} bytes (${Math.round(blob.size / 1024)}KB)`);
-
-        if (blob.size < 5000) {
-          console.log(`[Segment ${chunkNum}] Recording too small (${blob.size} bytes), skipping...`);
-          setTranscript(prev => [...prev, {
-            id: Date.now(),
-            text: `⚠️ Recording too short (${(recordingDuration / 1000).toFixed(1)}s). Speak longer before pressing spacebar.`,
-            isProcessing: false
-          }]);
-
-          if (isRecording && !isPaused) {
-            startNewRecordingSegment();
-          }
-          return;
-        }
-
-        const recordingData = {
-          id: segmentId,
-          blob: blob,
-          chunkNumber: chunkNum,
-          timestamp: new Date().toLocaleTimeString(),
-          duration: recordingDuration,
-          size: blob.size,
-          studentName: null
-        };
-
-        completedRecordingsRef.current.push(recordingData);
-
-        setRecordingSegments(prev => [...prev, {
-          id: segmentId,
-          chunkNumber: chunkNum,
-          timestamp: recordingData.timestamp,
-          duration: recordingDuration,
-          size: blob.size,
-          studentName: null,
-          status: 'processing'
-        }]);
-
-        const entryId = Date.now();
-        setTranscript(prev => [
-          {
-            id: entryId,
-            text: `⏳ Processing segment ${chunkNum}... (${Math.round(blob.size / 1024)}KB, ${(recordingDuration / 1000).toFixed(1)}s)`,
-            isProcessing: true,
-            segmentNumber: chunkNum,
-            timestamp: new Date().toLocaleTimeString()
-          },
-          ...prev
-        ]);
-        setPendingCount(prev => prev + 1);
-
-        if (isRecording && !isPaused) {
-          startNewRecordingSegment();
-        }
-
-        processSegmentWithN8N(segmentId, chunkNum, blob, entryId, recordingDuration);
       };
 
       const handleWebhookSuccess = ({
@@ -1634,6 +1843,10 @@
             email: s.email
           }));
 
+          const suggestedStudent = pdfMatch && currentGradingStudent
+            ? (currentGradingStudent.studentId || currentGradingStudent.id || '')
+            : '';
+
           const payload = {
             audio: {
               filename,
@@ -1651,7 +1864,8 @@
               sections: selectedSections.map(s => ({ name: s.name, id: s.id }))
             },
             rubric: rubricItems,
-            roster
+            roster,
+            suggestedStudent
           };
 
           const logPrefix = `[Segment ${chunkNum}]`;
@@ -2058,7 +2272,7 @@
         return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
       };
 
-      // Helper functions for rubric-click grading
+      // Helper functions for rubric scoring shortcuts
       const calculateRubricScoreOptions = (maxPoints) => {
         if (maxPoints <= 0) return [0];
 
@@ -2603,65 +2817,22 @@
                   </div>
                 </div>
 
-                <div className="mb-6">
-                  <label className="block text-sm font-medium text-pacifica-navy mb-3">Select Grading Mode</label>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <button
-                      onClick={() => setGradingMode('voice')}
-                      className={`p-6 rounded-lg border-2 transition-all text-left ${gradingMode === 'voice'
-                        ? 'border-pacifica-orange bg-pacifica-orange/10 shadow-md'
-                        : 'border-pacifica-gray hover:border-pacifica-orange hover:bg-pacifica-orange/5'
-                        }`}
-                    >
-                      <div className="flex items-start gap-4">
-                        <div className={`w-12 h-12 rounded-full flex items-center justify-center ${gradingMode === 'voice' ? 'bg-pacifica-orange text-white' : 'bg-pacifica-gray text-pacifica-navy'
-                          }`}>
-                          <Icon name="Mic" className="w-6 h-6" />
-                        </div>
-                        <div className="flex-1">
-                          <h3 className="font-semibold text-pacifica-navy text-lg mb-1">Voice Grading</h3>
-                          <p className="text-sm text-pacifica-slate">
-                            Record your voice feedback for each student. Transcripts are automatically processed to extract grades.
-                          </p>
-                        </div>
-                        {gradingMode === 'voice' && (
-                          <Icon name="CheckCircle" className="w-6 h-6 text-pacifica-orange" />
-                        )}
-                      </div>
-                    </button>
-
-                    <button
-                      onClick={() => setGradingMode('rubric-click')}
-                      className={`p-6 rounded-lg border-2 transition-all text-left ${gradingMode === 'rubric-click'
-                        ? 'border-pacifica-orange bg-pacifica-orange/10 shadow-md'
-                        : 'border-pacifica-gray hover:border-pacifica-orange hover:bg-pacifica-orange/5'
-                        }`}
-                    >
-                      <div className="flex items-start gap-4">
-                        <div className={`w-12 h-12 rounded-full flex items-center justify-center ${gradingMode === 'rubric-click' ? 'bg-pacifica-orange text-white' : 'bg-pacifica-gray text-pacifica-navy'
-                          }`}>
-                          <Icon name="MousePointer" className="w-6 h-6" />
-                        </div>
-                        <div className="flex-1">
-                          <h3 className="font-semibold text-pacifica-navy text-lg mb-1">Click Rubric Grading</h3>
-                          <p className="text-sm text-pacifica-slate">
-                            Quickly grade students by clicking pre-calculated score options for each rubric item.
-                          </p>
-                        </div>
-                        {gradingMode === 'rubric-click' && (
-                          <Icon name="CheckCircle" className="w-6 h-6 text-pacifica-orange" />
-                        )}
-                      </div>
-                    </button>
-                  </div>
+                <div className="mb-6 p-4 bg-pacifica-orange/10 rounded-lg border border-pacifica-orange/30">
+                  <h3 className="font-semibold text-pacifica-navy mb-1 flex items-center gap-2">
+                    <Icon name="Sparkles" className="w-5 h-5" />
+                    Unified grading
+                  </h3>
+                  <p className="text-sm text-pacifica-slate">
+                    Record feedback, click rubric scores, and view matched PDFs in the same workspace. If no PDFs are uploaded, the PDF panel will show guidance instead.
+                  </p>
                 </div>
 
                 <button
-                  onClick={() => startGradingSession(gradingMode)}
+                  onClick={startGradingSession}
                   disabled={!assignmentName.trim()}
                   className="w-full py-3 bg-pacifica-orange text-white font-semibold rounded-lg hover:bg-pacifica-tangerine disabled:bg-pacifica-gray disabled:cursor-not-allowed transition-colors"
                 >
-                  Start {gradingMode === 'voice' ? 'Voice' : 'Click Rubric'} Grading Session
+                  Start Grading Session
                 </button>
               </div>
             </div>
@@ -2954,6 +3125,12 @@
                         <Icon name="ChevronRight" className="w-5 h-5" />
                       </button>
                     </div>
+                    <button
+                      onClick={() => setShowPDFMatchReview(false)}
+                      className="p-2 rounded-lg hover:bg-pacifica-gray hover:bg-opacity-30"
+                    >
+                      <Icon name="X" className="w-5 h-5 text-pacifica-navy" />
+                    </button>
                   </div>
 
                   {currentGradingStudent ? (
@@ -3111,6 +3288,11 @@
                       <p className="font-medium">No PDF matched to this student.</p>
                       <p className="text-sm">Upload a PDF with a matching student name or ID to view it here.</p>
                     </div>
+                  ) : (
+                    <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
+                      <p className="font-semibold">No student selected.</p>
+                      <p className="text-sm">Please select a student from the list.</p>
+                    </div>
                   )}
                 </div>
               </div>
@@ -3124,6 +3306,107 @@
           return (
             <div className="flex h-screen overflow-hidden bg-gray-100">
               <div className="flex-1 relative border-r border-gray-300 bg-gray-200 overflow-hidden">
+                <PDFViewer
+                  file={pdfMatch.file}
+                  pageNumber={pdfPage}
+                  scale={pdfScale}
+                  onPageChange={setPdfPage}
+                  onScaleChange={setPdfScale}
+                />
+                <div className="absolute top-4 left-4 z-20">
+                  <button
+                    onClick={() => {
+                      if (confirm('Exit grading session?')) setStep('assignment-setup');
+                    }}
+                    className="p-2 bg-white rounded-full shadow-md hover:bg-gray-100 text-gray-600 flex items-center justify-center transition-colors"
+                    title="Exit"
+                  >
+                    <Icon name="ArrowLeft" className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="w-[450px] flex flex-col bg-white shadow-xl z-10 h-full border-l border-gray-200">
+                <div className="p-4 border-b bg-gray-50 flex items-center justify-between shrink-0">
+                  <button
+                    onClick={() => prevStudent && setCurrentGradingStudentId(prevStudent.id)}
+                    disabled={!prevStudent}
+                    className="p-2 hover:bg-white rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-pacifica-navy"
+                  >
+                    <Icon name="ChevronLeft" className="w-6 h-6" />
+                  </button>
+
+                  <div className="mt-4">
+                    <label className="block text-sm font-medium text-pacifica-navy mb-1">Comments</label>
+                    <textarea
+                      value={grades[currentGradingStudentId]?.comments || ''}
+                      onChange={(e) => updateComments(currentGradingStudentId, e.target.value)}
+                      className="w-full h-28 border border-pacifica-gray rounded-lg p-3 text-pacifica-navy focus:ring-2 focus:ring-pacifica-orange focus:outline-none"
+                      placeholder="Enter feedback for the student..."
+                    />
+                  </div>
+
+                  <div className="mt-4 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-pacifica-slate">Total Score</p>
+                      <p className="text-3xl font-bold text-pacifica-navy">{calculateTotal(grades[currentGradingStudentId] || { scores: {} })} / {calculateMaxTotal()}</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setGrades(prev => ({
+                          ...prev,
+                          [currentGradingStudentId]: {
+                            ...prev[currentGradingStudentId],
+                            completed: true
+                          }
+                        }));
+                        if (nextStudent) {
+                          setCurrentGradingStudentId(nextStudent.id);
+                        }
+                      }}
+                      className="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors"
+                    >
+                      Mark Complete
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-lg shadow-md border border-pacifica-gray p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-lg font-semibold text-pacifica-navy">PDF Viewer</h2>
+                    <div className="flex items-center gap-2 text-sm text-pacifica-slate">
+                      <Icon name="FileText" className="w-4 h-4" />
+                      <span>Navigate pages & zoom</span>
+                    </div>
+                  </div>
+
+                  {pdfMatch ? (
+                    <PDFViewer
+                      file={pdfMatch.file}
+                      pageNumber={pdfPage}
+                      scale={pdfScale}
+                      onPageChange={setPdfPage}
+                      onScaleChange={setPdfScale}
+                    />
+                  ) : (
+                    <div className="p-6 bg-pacifica-gray bg-opacity-10 rounded-lg text-center text-pacifica-slate">
+                      <Icon name="AlertCircle" className="w-6 h-6 text-pacifica-gray mx-auto mb-2" />
+                      <p className="font-medium">No PDF matched to this student.</p>
+                      <p className="text-sm">Upload a PDF with a matching student name or ID to view it here.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      if (step === 'grading') {
+        if (pdfMatch && currentGradingStudent) {
+          return (
+            <div className="flex h-screen overflow-hidden bg-gray-100">
+              <div className="flex-1 relative border-r border-gray-300 bg-gray-200 overflow-auto">
                 <PDFViewer
                   file={pdfMatch.file}
                   pageNumber={pdfPage}
@@ -3183,159 +3466,6 @@
         );
       }
 
-      if (step === 'rubric-click-grading') {
-        const currentGradingStudent = students.find(s => s.id === currentGradingStudentId);
-        const currentGrade = currentGradingStudent ? grades[currentGradingStudentId] || { scores: {}, comments: '', completed: false } : null;
-        const allGraded = students.every(s => grades[s.id]?.completed);
-        const gradedCount = students.filter(s => grades[s.id]?.completed).length;
-
-        // PDF Match Check
-        const pdfMatch = currentGradingStudent ? uploadedPDFs.find(p => p.studentId === currentGradingStudent.studentId && p.method !== 'Unmatched') : null;
-
-        // Navigation Helpers
-        const currentIndex = currentGradingStudent ? orderedStudents.findIndex(s => s.id === currentGradingStudent.id) : -1;
-        const prevStudent = currentIndex > 0 ? orderedStudents[currentIndex - 1] : null;
-        const nextStudent = currentIndex !== -1 && currentIndex < orderedStudents.length - 1 ? orderedStudents[currentIndex + 1] : null;
-
-        if (pdfMatch && currentGradingStudent) {
-          return (
-            <div className="flex h-screen overflow-hidden bg-gray-100">
-              <div className="flex-1 relative border-r border-gray-300 bg-gray-200 overflow-hidden">
-                <PDFViewer
-                  file={pdfMatch.file}
-                  pageNumber={pdfPage}
-                  scale={pdfScale}
-                  onPageChange={setPdfPage}
-                  onScaleChange={setPdfScale}
-                />
-                <div className="absolute top-4 left-4 z-20">
-                  <button
-                    onClick={() => {
-                      if (confirm('Exit grading session?')) {
-                        setStep('assignment-setup');
-                      }
-                    }}
-                    className="p-2 bg-white rounded-full shadow-md hover:bg-gray-100 text-gray-600 flex items-center justify-center transition-colors"
-                    title="Exit"
-                  >
-                    <Icon name="ArrowLeft" className="w-5 h-5" />
-                  </button>
-                </div>
-              </div>
-
-              <div className="w-[450px] flex flex-col bg-white shadow-xl z-10 h-full border-l border-gray-200">
-                <div className="p-4 border-b bg-gray-50 flex items-center justify-between shrink-0">
-                  <button
-                    onClick={() => prevStudent && setCurrentGradingStudentId(prevStudent.id)}
-                    disabled={!prevStudent}
-                    className="p-2 hover:bg-white rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-pacifica-navy"
-                  >
-                    <Icon name="ChevronLeft" className="w-6 h-6" />
-                  </button>
-
-                  <div className="text-center">
-                    <h3 className="font-bold text-pacifica-navy truncate max-w-[200px]">{currentGradingStudent.name}</h3>
-                    <p className="text-xs text-pacifica-slate">
-                      {currentIndex + 1} of {students.length}
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={() => nextStudent && setCurrentGradingStudentId(nextStudent.id)}
-                    disabled={!nextStudent}
-                    className="p-2 hover:bg-white rounded-full transition-colors disabled:opacity-30 disabled:cursor-not-allowed text-pacifica-navy"
-                  >
-                    <Icon name="ChevronRight" className="w-6 h-6" />
-                  </button>
-                </div>
-
-                {renderVoiceContent(true)}
-              </div>
-            </div>
-          );
-        }
-
-        return (
-          <div className="min-h-screen bg-pacifica-gray bg-opacity-10 flex">
-            <div className="w-80 bg-white border-r border-pacifica-gray flex flex-col h-screen fixed left-0 top-0 bottom-0 z-10">
-              <div className="p-4 border-b border-pacifica-gray bg-gradient-to-r from-pacifica-navy to-pacifica-midnight shrink-0">
-                <h2 className="text-lg font-bold text-white">{assignmentName}</h2>
-                <p className="text-sm text-pacifica-gray">Click Rubric Grading</p>
-                <p className="text-xs text-white mt-1">{gradedCount}/{students.length} graded</p>
-                <button
-                  onClick={() => setStep('review')}
-                  className="mt-3 w-full px-3 py-2 bg-pacifica-orange text-white text-sm font-medium rounded-lg hover:bg-pacifica-tangerine transition-colors flex items-center justify-center gap-2"
-                >
-                  <Icon name="ClipboardCheck" className="w-4 h-4" />
-                  Review & Upload ({gradedCount})
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                {orderedStudents.map((student) => {
-                  const sg = grades[student.id] || { scores: {}, comments: '', completed: false };
-                  const total = calculateTotal(sg);
-                  const isCurrentStudent = currentGradingStudentId === student.id;
-
-                  return (
-                    <button
-                      key={student.id}
-                      onClick={() => setCurrentGradingStudentId(student.id)}
-                      className={`w-full text-left p-3 rounded-lg border-2 transition-all ${isCurrentStudent
-                        ? 'border-pacifica-orange bg-pacifica-orange/10 shadow-md'
-                        : sg.completed
-                          ? 'border-green-300 bg-green-50 hover:border-green-400'
-                          : 'border-pacifica-gray bg-white hover:border-pacifica-orange'
-                        }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 min-w-0 flex-1">
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0 ${sg.completed ? 'bg-green-600 text-white' : 'bg-pacifica-gray text-pacifica-navy'
-                            }`}>
-                            {sg.completed ? <Icon name="Check" className="w-4 h-4" /> : getInitials(student.name)}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <p className="font-medium text-pacifica-navy text-sm truncate">{student.name}</p>
-                            <p className="text-xs text-pacifica-slate truncate">ID: {student.studentId}</p>
-                          </div>
-                        </div>
-                        <div className="text-right ml-2">
-                          {sg.completed ? (
-                            <>
-                              <p className="text-lg font-bold text-pacifica-navy">{total}</p>
-                              <p className="text-xs text-pacifica-slate">/{calculateMaxTotal()}</p>
-                            </>
-                          ) : (
-                            <p className="text-xs text-pacifica-slate">Not graded</p>
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="p-3 border-t border-pacifica-gray bg-pacifica-gray/20 shrink-0">
-                <button
-                  onClick={() => {
-                    if (confirm('Exit grading session? Unsaved grades will be lost.')) {
-                      setStep('assignment-setup');
-                    }
-                  }}
-                  className="w-full px-3 py-2 bg-pacifica-slate text-white font-medium rounded-lg hover:bg-pacifica-midnight transition-colors text-sm"
-                >
-                  Exit Session
-                </button>
-              </div>
-            </div>
-
-            <div className="flex-1 ml-80 min-h-screen">
-              {renderVoiceContent(false)}
-            </div>
-          </div>
-        );
-      }
-
       if (step === 'review') {
         const completedCount = Object.values(grades).filter(g => g.completed).length;
         const maxTotal = calculateMaxTotal();
@@ -3365,7 +3495,7 @@
                     ) : (
                       <div className="flex gap-3">
                         <button
-                          onClick={() => setStep(gradingMode === 'rubric-click' ? 'rubric-click-grading' : 'grading')}
+                          onClick={() => setStep('grading')}
                           className="btn btn-outline"
                         >
                           Back to Grading
@@ -3876,7 +4006,46 @@
       );
     }
 
-    ReactDOM.render(<GradingInterface />, document.getElementById('root'));
+    class ErrorBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { error: null };
+      }
+
+      static getDerivedStateFromError(error) {
+        return { error };
+      }
+
+      componentDidCatch(error, info) {
+        console.error('Rendering error captured:', error, info);
+      }
+
+      render() {
+        if (this.state.error) {
+          return (
+            <div className="min-h-screen bg-pacifica-gray bg-opacity-20 flex items-center justify-center p-6">
+              <div className="bg-white rounded-lg shadow-xl p-8 max-w-lg w-full border border-red-200">
+                <h2 className="text-xl font-bold text-red-600 mb-2">Something went wrong</h2>
+                <p className="text-sm text-pacifica-slate mb-4">Please refresh the page and try again. If the issue persists, check console logs for details.</p>
+                <div className="flex gap-3">
+                  <button className="btn btn-primary flex-1" onClick={() => window.location.reload()}>Refresh</button>
+                  <button className="btn flex-1" onClick={() => this.setState({ error: null })}>Try Again</button>
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        return this.props.children;
+      }
+    }
+
+    ReactDOM.render(
+      <ErrorBoundary>
+        <GradingInterface />
+      </ErrorBoundary>,
+      document.getElementById('root')
+    );
   </script>
 </body>
 
