@@ -512,7 +512,12 @@
         if (files.length === 0) return;
 
         const results = files.filter(f => f.type === 'application/pdf').map(file => {
-          return matchStudentToPDF(file, students);
+          const match = matchStudentToPDF(file, students);
+          return {
+            ...match,
+            // Normalize the matched identifier so downstream lookups succeed
+            studentId: match.student?.studentId || match.student?.id || null
+          };
         });
 
         setUploadedPDFs(prev => {
@@ -2807,376 +2812,181 @@
         );
       }
 
-      if (step === 'grading') {
-        const pdfMatch = currentGradingStudentId
-          ? uploadedPDFs.find(p => p.studentId === currentGradingStudentId && p.method !== 'Unmatched')
-          : null;
+      const currentGradingStudent = students.find(
+        (s) => s.studentId === currentGradingStudentId || s.id === currentGradingStudentId
+      );
+      const currentGrade = currentGradingStudent
+        ? grades[currentGradingStudent.id] || { scores: {}, comments: '', completed: false }
+        : null;
 
-        // Should ensure we have a current student selected if possible, or handle null
-        const currentGradingStudent = students.find(s => s.studentId === currentGradingStudentId || s.id === currentGradingStudentId);
+      const studentList = orderedStudents.length > 0 ? orderedStudents : students;
+      const currentIndex = currentGradingStudent ? studentList.findIndex((s) => s.id === currentGradingStudent.id) : -1;
+      const prevStudent = currentIndex > 0 ? studentList[currentIndex - 1] : null;
+      const nextStudent = currentIndex !== -1 && currentIndex < studentList.length - 1 ? studentList[currentIndex + 1] : null;
+      const pdfMatch = currentGradingStudent
+        ? uploadedPDFs.find((p) => p.studentId === currentGradingStudent.studentId && p.method !== 'Unmatched')
+        : null;
 
-        // Access orderedStudents from outer scope or re-derive if needed
-        // Assuming orderedStudents is available in scope as it was for rubric-click-grading
-        // If not, we fall back to 'students' array
-        const studentList = typeof orderedStudents !== 'undefined' ? orderedStudents : students;
-
-        const currentIndex = currentGradingStudent ? studentList.findIndex(s => s.id === currentGradingStudent.id) : -1;
-        const prevStudent = currentIndex > 0 ? studentList[currentIndex - 1] : null;
-        const nextStudent = currentIndex !== -1 && currentIndex < studentList.length - 1 ? studentList[currentIndex + 1] : null;
-
-        const renderVoiceContent = (isSidebar) => {
-          const header = !isSidebar ? (
-            <div className="bg-white rounded-lg shadow-md border border-pacifica-gray p-4 mb-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h1 className="text-2xl font-bold text-pacifica-navy">{assignmentName}</h1>
-                  <p className="text-sm text-pacifica-slate">{selectedTeacher?.name} • {selectedSections.map(s => s.name).join(', ')}</p>
-                </div>
-                <div className="flex items-center gap-4">
-                  {pendingCount > 0 && (
-                    <div className="flex items-center gap-2 px-3 py-1 bg-pacifica-tangerine bg-opacity-20 text-pacifica-tangerine rounded-full text-sm font-medium">
-                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-pacifica-tangerine"></div>
-                      {pendingCount} processing
-                    </div>
-                  )}
-                  <button
-                    onClick={() => setStep('review')}
-                    disabled={Object.values(grades).filter(g => g.completed).length === 0}
-                    className="px-4 py-2 bg-pacifica-orange text-white font-semibold rounded-lg hover:bg-pacifica-tangerine disabled:bg-pacifica-gray disabled:cursor-not-allowed transition-colors flex items-center gap-2"
-                  >
-                    <Icon name="ClipboardCheck" className="w-4 h-4" />
-                    Review & Upload
-                  </button>
-                  <button
-                    onClick={async () => {
-                      if (confirm('Exit grading session? Unsaved grades will be lost.')) {
-                        if (isRecording) {
-                          if (mediaStreamRef.current) {
-                            mediaStreamRef.current.getTracks().forEach(track => track.stop());
-                          }
-                          setIsRecording(false);
-                        }
-                        setStep('assignment-setup');
-                      }
-                    }}
-                    className="px-4 py-2 bg-pacifica-slate text-white font-semibold rounded-lg hover:bg-pacifica-midnight transition-colors"
-                  >
-                    Exit Session
-                  </button>
-                </div>
+      const renderVoiceContent = (isSidebar) => {
+        const header = !isSidebar ? (
+          <div className="bg-white rounded-lg shadow-md border border-pacifica-gray p-4 mb-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-2xl font-bold text-pacifica-navy">{assignmentName}</h1>
+                <p className="text-sm text-pacifica-slate">{selectedTeacher?.name} • {selectedSections.map(s => s.name).join(', ')}</p>
               </div>
-              {error && (
-                <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-                  <p className="text-sm text-red-600">{error}</p>
-                </div>
-              )}
-            </div>
-          ) : null;
-
-          return (
-            <div className={`${isSidebar ? 'p-4' : 'max-w-7xl mx-auto'}`}>
-              {header}
-
-
-              {/* Standard Main Content */}
-              <div className={`grid ${isSidebar ? 'grid-cols-1' : 'grid-cols-3'} gap-6`}>
-                <div className="space-y-6">
-                  <div className="bg-white rounded-lg shadow-md border border-pacifica-gray p-6">
-                    <h2 className="text-lg font-semibold text-pacifica-navy mb-4">Recording Controls</h2>
-                    <div className="flex flex-col items-center gap-4">
-                      {!isRecording ? (
-                        <button
-                          onClick={startRecording}
-                          className="w-20 h-20 rounded-full bg-pacifica-orange hover:bg-pacifica-tangerine flex items-center justify-center transition-all shadow-lg"
-                        >
-                          <Icon name="Mic" className="w-8 h-8 text-white" />
-                        </button>
-                      ) : (
-                        <div className="flex gap-3">
-                          {isPaused ? (
-                            <button
-                              onClick={resumeRecording}
-                              className="w-16 h-16 rounded-full bg-green-600 hover:bg-green-700 flex items-center justify-center transition-all shadow-lg"
-                            >
-                              <Icon name="Play" className="w-6 h-6 text-white" />
-                            </button>
-                          ) : (
-                            <button
-                              onClick={pauseRecording}
-                              className="w-16 h-16 rounded-full bg-pacifica-canary hover:bg-yellow-500 flex items-center justify-center transition-all shadow-lg"
-                            >
-                              <Icon name="Pause" className="w-6 h-6 text-pacifica-navy" />
-                            </button>
-                          )}
-                          <button
-                            onClick={finishRecording}
-                            className="w-16 h-16 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center transition-all shadow-lg"
-                          >
-                            <Icon name="Square" className="w-6 h-6 text-white" />
-                          </button>
-                        </div>
-                      )}
-                      <div className="text-center w-full">
-                        <p className="text-sm font-medium text-pacifica-navy">
-                          {!isRecording ? 'Ready to Record' : isPaused ? 'Paused' : 'Recording...'}
-                        </p>
-                        <p className="text-2xl font-mono text-pacifica-slate mt-2">{formatTime(recordingTime)}</p>
-                        {currentStudent && <p className="text-sm text-pacifica-orange font-medium mt-2">Currently: {currentStudent}</p>}
-                        {micError && <p className="text-xs text-red-600 mt-2">{micError}</p>}
-                      </div>
-                      {isRecording && !isPaused && (
-                        <div className="mt-2 p-3 bg-pacifica-orange bg-opacity-10 rounded-lg border border-pacifica-orange w-full">
-                          <p className="text-xs font-semibold text-pacifica-navy mb-1">How to use:</p>
-                          <p className="text-xs text-pacifica-slate">
-                            🎤 Speak about one student<br />
-                            ⌨️ Press SPACE to finish & start next<br />
-                            ⏸️ Pause when needed<br />
-                            ⏹️ Finish to end session<br />
-                            💾 Download recordings anytime
-                          </p>
-                        </div>
-                      )}
-                    </div>
+              <div className="flex items-center gap-4">
+                {pendingCount > 0 && (
+                  <div className="flex items-center gap-2 px-3 py-1 bg-pacifica-tangerine bg-opacity-20 text-pacifica-tangerine rounded-full text-sm font-medium">
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-pacifica-tangerine"></div>
+                    {pendingCount} processing
                   </div>
-
-                  <div className="bg-white rounded-lg shadow-md border border-pacifica-gray p-6">
-                    <h2 className="text-lg font-semibold text-pacifica-navy mb-4">Rubric Reference</h2>
-                    <div className="space-y-2">
-                      {rubricItems.map((item, idx) => (
-                        <div key={idx} className="flex justify-between">
-                          <span className="text-sm text-pacifica-slate">{item.name}</span>
-                          <span className="text-sm font-semibold text-pacifica-navy">/{item.maxPoints}</span>
-                        </div>
-                      ))}
-                      <div className="pt-2 border-t border-pacifica-gray flex justify-between">
-                        <span className="text-sm font-semibold text-pacifica-navy">Total</span>
-                        <span className="text-sm font-bold text-pacifica-orange">/{calculateMaxTotal()}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="bg-white rounded-lg shadow-md border border-pacifica-gray p-6">
-                    <div className="flex items-center justify-between mb-4">
-                      <h2 className="text-lg font-semibold text-pacifica-navy">Recording Segments ({recordingSegments.length})</h2>
-                      {recordingSegments.length > 0 && (
-                        <button
-                          onClick={downloadAllRecordings}
-                          className="px-3 py-1 bg-pacifica-orange text-white text-sm rounded hover:bg-pacifica-tangerine flex items-center gap-1"
-                        >
-                          <Icon name="Download" className="w-4 h-4" />
-                          Download All
-                        </button>
-                      )}
-                    </div>
-                    {recordingSegments.length === 0 ? (
-                      <p className="text-sm text-pacifica-gray italic">No recordings yet. Press SPACEBAR to finish first segment.</p>
-                    ) : (
-                      <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
-                        {recordingSegments.map((segment) => (
-                          <div
-                            key={segment.id}
-                            onClick={() => {
-                              const recording = completedRecordingsRef.current.find(r => r.id === segment.id);
-                              if (recording) downloadRecording(recording);
-                            }}
-                            className={`px-3 py-2 rounded-lg border cursor-pointer transition-all hover:shadow-md ${segment.status === 'completed' ? 'bg-green-50 border-green-300' :
-                              segment.status === 'processing' ? 'bg-pacifica-canary bg-opacity-20 border-pacifica-canary animate-pulse' :
-                                segment.status === 'error' ? 'bg-red-50 border-red-300' :
-                                  'bg-pacifica-gray bg-opacity-20 border-pacifica-gray'
-                              }`}
-                            title="Click to download"
-                          >
-                            <div className="flex items-center gap-2">
-                              <Icon name={
-                                segment.status === 'completed' ? 'CheckCircle' :
-                                  segment.status === 'processing' ? 'Loader' :
-                                    segment.status === 'error' ? 'XCircle' :
-                                      'HelpCircle'
-                              } className="w-4 h-4" />
-                              <div>
-                                <p className="text-xs font-semibold text-pacifica-navy">
-                                  {segment.studentName || `Segment ${segment.chunkNumber}`}
-                                </p>
-                                <p className="text-xs text-pacifica-slate">
-                                  {(segment.duration / 1000).toFixed(1)}s • {Math.round(segment.size / 1024)}KB
-                                </p>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                </div>
-
-                <div className="space-y-4 mb-6">
-                  {rubricItems.map((item, idx) => {
-                    const scoreOptions = calculateRubricScoreOptions(item.maxPoints);
-                    const currentScore = currentGrade?.scores[item.name];
-
-                    return (
-                      <div key={idx} className="bg-white rounded-lg shadow-md border border-pacifica-gray p-6">
-                        <div className="flex items-center justify-between mb-4">
-                          <h3 className="text-lg font-semibold text-pacifica-navy">{item.name}</h3>
-                          <span className="text-sm text-pacifica-slate">Max: {item.maxPoints} points</span>
-                        </div>
-
-                        <div className="grid grid-cols-6 gap-3 mb-3">
-                          {scoreOptions.map((score) => (
-                            <button
-                              key={score}
-                              onClick={() => updateRubricClickScore(currentGradingStudentId, item.name, score)}
-                              className={`p-4 rounded-lg border-2 transition-all ${currentScore === score
-                                ? 'border-pacifica-orange bg-pacifica-orange text-white shadow-lg scale-105'
-                                : 'border-pacifica-gray bg-white text-pacifica-navy hover:border-pacifica-orange hover:bg-pacifica-orange/10'
-                                }`}
-                            >
-                              <div className="text-2xl font-bold">{score}</div>
-                              <div className="text-xs mt-1 opacity-80">
-                                {score === 0 ? '0%' : score === item.maxPoints ? '100%' : `${Math.round((score / item.maxPoints) * 100)}%`}
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <label className="text-sm text-pacifica-slate">Custom:</label>
-                          <input
-                            key={`${currentGradingStudentId}-${item.name}`}
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            max={item.maxPoints}
-                            defaultValue={currentScore === undefined ? '' : currentScore}
-                            onChange={(e) => {
-                              const val = parseFloat(e.target.value);
-                              if (!isNaN(val) && val >= 0 && val <= item.maxPoints) {
-                                updateRubricClickScore(currentGradingStudentId, item.name, val);
-                              } else if (e.target.value === '') {
-                                updateRubricClickScore(currentGradingStudentId, item.name, 0);
-                              }
-                            }}
-                            placeholder={`0-${item.maxPoints}`}
-                            className="w-20 px-3 py-2 border-2 border-pacifica-gray rounded-lg focus:ring-2 focus:ring-pacifica-orange focus:border-pacifica-orange text-sm text-center"
-                          />
-                          <span className="text-xs text-pacifica-slate">/ {item.maxPoints}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {/* Comments */}
-                <div className="bg-white rounded-lg shadow-md border border-pacifica-gray p-6 mb-6">
-                  <label className="block text-sm font-semibold text-pacifica-navy mb-2">
-                    Comments (Optional)
-                  </label>
-                  <textarea
-                    value={currentGrade?.comments || ''}
-                    onChange={(e) => {
-                      setGrades(prev => ({
-                        ...prev,
-                        [currentGradingStudentId]: {
-                          ...prev[currentGradingStudentId],
-                          comments: e.target.value
+                )}
+                <button
+                  onClick={() => setStep('review')}
+                  disabled={Object.values(grades).filter(g => g.completed).length === 0}
+                  className="px-4 py-2 bg-pacifica-orange text-white font-semibold rounded-lg hover:bg-pacifica-tangerine disabled:bg-pacifica-gray disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+                >
+                  <Icon name="ClipboardCheck" className="w-4 h-4" />
+                  Review & Upload
+                </button>
+                <button
+                  onClick={async () => {
+                    if (confirm('Exit grading session? Unsaved grades will be lost.')) {
+                      if (isRecording) {
+                        if (mediaStreamRef.current) {
+                          mediaStreamRef.current.getTracks().forEach(track => track.stop());
                         }
-                      }));
-                    }}
-                    rows={4}
-                    placeholder="Add any additional comments for this student..."
-                    className="w-full px-4 py-3 border-2 border-pacifica-gray rounded-lg focus:ring-2 focus:ring-pacifica-orange focus:border-transparent text-sm"
-                  />
-                </div>
+                        setIsRecording(false);
+                      }
+                      setStep('assignment-setup');
+                    }
+                  }}
+                  className="px-4 py-2 bg-pacifica-slate text-white font-semibold rounded-lg hover:bg-pacifica-midnight transition-colors"
+                >
+                  Exit Session
+                </button>
+              </div>
+            </div>
+            {error && (
+              <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+                <p className="text-sm text-red-600">{error}</p>
+              </div>
+            )}
+          </div>
+        ) : null;
 
-                {/* Action Buttons */}
-                <div className="flex gap-3">
-                  {!currentGrade?.completed ? (
-                    <button
-                      onClick={completeCurrentStudent}
-                      className="flex-1 px-6 py-3 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-2"
-                    >
-                      <Icon name="CheckCircle" className="w-5 h-5" />
-                      Complete & Next Student
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        setGrades(prev => ({
-                          ...prev,
-                          [currentGradingStudentId]: {
-                            ...prev[currentGradingStudentId],
-                            completed: false
+        return (
+          <div className={`${isSidebar ? 'p-4' : 'max-w-7xl mx-auto'}`}>
+            {header}
+
+            {/* Standard Main Content */}
+            <div className={`grid ${isSidebar ? 'grid-cols-1' : 'grid-cols-3'} gap-6`}>
+              <div className="space-y-6">
+                <div className="bg-white rounded-lg shadow-md border border-pacifica-gray p-6">
+                  <h2 className="text-lg font-semibold text-pacifica-navy mb-4">Recording Controls</h2>
+                  <div className="flex flex-col items-center gap-4">
+                    {!isRecording ? (
+                      <button
+                        onClick={startRecording}
+                        className="w-20 h-20 rounded-full bg-pacifica-orange hover:bg-pacifica-tangerine flex items-center justify-center transition-all shadow-lg"
+                        title="Start Recording"
+                      >
+                        <Icon name="Mic" className="w-8 h-8 text-white" />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={stopRecording}
+                        className="w-20 h-20 rounded-full bg-red-500 hover:bg-red-600 flex items-center justify-center transition-all shadow-lg"
+                        title="Stop Recording"
+                      >
+                        <Icon name="Square" className="w-8 h-8 text-white" />
+                      </button>
+                    )}
+
+                    <div className="text-center">
+                      <p className="text-2xl font-bold text-pacifica-navy">{formatTime(recordingTime)}</p>
+                      <p className="text-sm text-pacifica-slate">{isRecording ? 'Recording… (press SPACE to process)' : 'Idle'}</p>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={processCurrentAudioChunk}
+                        disabled={!isRecording || processingAudio}
+                        className="btn btn-primary"
+                      >
+                        <Icon name="Upload" className="w-4 h-4" />
+                        Process Now
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (confirm('Clear all recorded audio?')) {
+                            setAudioChunks([]);
+                            setTranscript([]);
+                            setPendingCount(0);
                           }
-                        }));
-                      }}
-                      className="flex-1 px-6 py-3 bg-pacifica-canary text-pacifica-navy font-semibold rounded-lg hover:bg-yellow-500 transition-colors flex items-center justify-center gap-2"
-                    >
-                      <Icon name="Edit" className="w-5 h-5" />
-                      Mark as Incomplete
-                    </button>
-                  )}
-
+                        }}
+                        className="btn btn-outline"
+                      >
+                        <Icon name="Trash2" className="w-4 h-4" />
+                        Reset
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="bg-white rounded-lg shadow-md border border-pacifica-gray p-6 col-span-2">
-                  <div className="flex items-center justify-between mb-4 gap-3">
-                    <h2 className="text-lg font-semibold text-pacifica-navy">Transcript (Newest First)</h2>
-                    <button
-                      onClick={() => {
-                        setManualTranscriptError(null);
-                        setShowManualTranscriptInput(prev => !prev);
-                      }}
-                      className="btn btn-outline"
-                    >
-                      <Icon name={showManualTranscriptInput ? 'Minus' : 'FileText'} className="w-4 h-4" />
-                      {showManualTranscriptInput ? 'Close' : 'Paste Transcript'}
-                    </button>
+                <div className="bg-white rounded-lg shadow-md border border-pacifica-gray p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h2 className="text-lg font-semibold text-pacifica-navy">Current Student</h2>
+                      <p className="text-sm text-pacifica-slate">Use arrows or click a student to navigate</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => prevStudent && setCurrentGradingStudentId(prevStudent.id)}
+                        disabled={!prevStudent}
+                        className="p-2 rounded-full bg-white border border-pacifica-gray text-pacifica-navy hover:bg-pacifica-orange hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <Icon name="ChevronLeft" className="w-5 h-5" />
+                      </button>
+                      <button
+                        onClick={() => nextStudent && setCurrentGradingStudentId(nextStudent.id)}
+                        disabled={!nextStudent}
+                        className="p-2 rounded-full bg-white border border-pacifica-gray text-pacifica-navy hover:bg-pacifica-orange hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        <Icon name="ChevronRight" className="w-5 h-5" />
+                      </button>
+                    </div>
                   </div>
 
-                  {showManualTranscriptInput && (
-                    <div className="mb-4 p-4 border border-pacifica-gray rounded-lg bg-pacifica-gray bg-opacity-10 animate-fadeIn">
-                      {/* Reduced manual transcript input logic here to save space as it's huge, 
-                                 or I should reuse it. I'll paste the original logic back simplified or full. 
-                                 I'll assume FULL content for correctness. 
-                             */}
-                      <label className="block text-sm font-semibold text-pacifica-navy mb-2" htmlFor="manual-transcript-input">
-                        Paste or type transcript text
-                      </label>
-                      <textarea
-                        id="manual-transcript-input"
-                        ref={manualTranscriptInputRef}
-                        value={manualTranscriptText}
-                        onChange={(e) => setManualTranscriptText(e.target.value)}
-                        rows={6}
-                        className="w-full p-3 border border-pacifica-gray rounded-lg focus:ring-2 focus:ring-pacifica-orange focus:border-pacifica-orange text-sm"
-                        placeholder="Paste or type transcript content here..."
-                        autoFocus
-                        disabled={isSubmittingTranscript}
-                      ></textarea>
-                      {/* ... buttons ... */}
-                      <div className="flex justify-end gap-2 mt-4">
-                        <button
-                          onClick={() => {
-                            setShowManualTranscriptInput(false);
-                            setManualTranscriptText('');
-                            setManualTranscriptError(null);
-                          }}
-                          className="btn btn-outline"
-                          disabled={isSubmittingTranscript}
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          onClick={submitManualTranscript}
-                          className="btn btn-primary"
-                          disabled={isSubmittingTranscript}
-                        >
-                          {isSubmittingTranscript ? 'Submitting...' : 'Submit Transcript'}
-                        </button>
+                  {currentGradingStudent ? (
+                    <div className="bg-pacifica-gray bg-opacity-20 rounded-lg p-4 flex items-center gap-4">
+                      <div className="w-12 h-12 rounded-full bg-pacifica-orange text-white flex items-center justify-center text-lg font-bold">
+                        {getInitials(currentGradingStudent.name)}
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-lg font-semibold text-pacifica-navy">{currentGradingStudent.name}</p>
+                        <p className="text-sm text-pacifica-slate">{currentGradingStudent.email || 'No email on file'}</p>
+                        <p className="text-xs text-pacifica-slate mt-1">ID: {currentGradingStudent.studentId}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm text-pacifica-slate">Position</p>
+                        <p className="text-lg font-bold text-pacifica-navy">{currentIndex + 1} / {students.length}</p>
                       </div>
                     </div>
+                  ) : (
+                    <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
+                      <p className="font-semibold">No student selected.</p>
+                      <p className="text-sm">Please select a student from the list.</p>
+                    </div>
                   )}
+                </div>
+
+                <div className="bg-white rounded-lg shadow-md border border-pacifica-gray p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-lg font-semibold text-pacifica-navy">Live Transcript</h2>
+                    <span className="text-sm text-pacifica-slate">Session: {sessionId || 'Not started'}</span>
+                  </div>
 
                   <div className="h-96 overflow-y-auto bg-pacifica-gray bg-opacity-10 rounded p-4 text-sm space-y-3">
                     {transcript.length === 0 ? (
@@ -3200,12 +3010,119 @@
                   </div>
                 </div>
               </div>
-            </div >
 
+              <div className={`${isSidebar ? 'hidden' : 'col-span-2 space-y-6'}`}>
+                <div className="bg-white rounded-lg shadow-md border border-pacifica-gray p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-lg font-semibold text-pacifica-navy">Grade Entry</h2>
+                    <div className="flex items-center gap-2 text-sm text-pacifica-slate">
+                      <Icon name="Info" className="w-4 h-4" />
+                      <span>Click to edit scores or add comments</span>
+                    </div>
+                  </div>
 
-          );
-        };
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {rubricItems.map((item) => (
+                      <div key={item.name} className="p-4 rounded-lg border border-pacifica-gray bg-pacifica-gray bg-opacity-10">
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="font-semibold text-pacifica-navy">{item.name}</p>
+                          <span className="text-xs text-pacifica-slate">Max: {item.maxPoints} pts</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            value={(grades[currentGradingStudentId]?.scores?.[item.name] ?? '')}
+                            onChange={(e) => updateRubricScore(currentGradingStudentId, item.name, e.target.value)}
+                            className="w-20 px-2 py-1 border border-pacifica-gray rounded text-pacifica-navy"
+                            min="0"
+                            max={item.maxPoints}
+                          />
+                          <div className="flex gap-1 overflow-x-auto">
+                            {calculateRubricScoreOptions(item.maxPoints).map(val => (
+                              <button
+                                key={val}
+                                onClick={() => updateRubricScore(currentGradingStudentId, item.name, val)}
+                                className={`px-3 py-1 rounded-full text-sm ${grades[currentGradingStudentId]?.scores?.[item.name] === val
+                                  ? 'bg-pacifica-orange text-white'
+                                  : 'bg-white border border-pacifica-gray text-pacifica-navy hover:bg-pacifica-gray hover:bg-opacity-20'
+                                  }`}
+                              >
+                                {val}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
 
+                  <div className="mt-4">
+                    <label className="block text-sm font-medium text-pacifica-navy mb-1">Comments</label>
+                    <textarea
+                      value={grades[currentGradingStudentId]?.comments || ''}
+                      onChange={(e) => updateComments(currentGradingStudentId, e.target.value)}
+                      className="w-full h-28 border border-pacifica-gray rounded-lg p-3 text-pacifica-navy focus:ring-2 focus:ring-pacifica-orange focus:outline-none"
+                      placeholder="Enter feedback for the student..."
+                    />
+                  </div>
+
+                  <div className="mt-4 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-pacifica-slate">Total Score</p>
+                      <p className="text-3xl font-bold text-pacifica-navy">{calculateTotal(grades[currentGradingStudentId] || { scores: {} })} / {calculateMaxTotal()}</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setGrades(prev => ({
+                          ...prev,
+                          [currentGradingStudentId]: {
+                            ...prev[currentGradingStudentId],
+                            completed: true
+                          }
+                        }));
+                        if (nextStudent) {
+                          setCurrentGradingStudentId(nextStudent.id);
+                        }
+                      }}
+                      className="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors"
+                    >
+                      Mark Complete
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-lg shadow-md border border-pacifica-gray p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-lg font-semibold text-pacifica-navy">PDF Viewer</h2>
+                    <div className="flex items-center gap-2 text-sm text-pacifica-slate">
+                      <Icon name="FileText" className="w-4 h-4" />
+                      <span>Navigate pages & zoom</span>
+                    </div>
+                  </div>
+
+                  {pdfMatch ? (
+                    <PDFViewer
+                      file={pdfMatch.file}
+                      pageNumber={pdfPage}
+                      scale={pdfScale}
+                      onPageChange={setPdfPage}
+                      onScaleChange={setPdfScale}
+                    />
+                  ) : (
+                    <div className="p-6 bg-pacifica-gray bg-opacity-10 rounded-lg text-center text-pacifica-slate">
+                      <Icon name="AlertCircle" className="w-6 h-6 text-pacifica-gray mx-auto mb-2" />
+                      <p className="font-medium">No PDF matched to this student.</p>
+                      <p className="text-sm">Upload a PDF with a matching student name or ID to view it here.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      if (step === 'grading') {
         if (pdfMatch && currentGradingStudent) {
           return (
             <div className="flex h-screen overflow-hidden bg-gray-100">
