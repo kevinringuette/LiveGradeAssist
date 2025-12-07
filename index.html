@@ -530,6 +530,25 @@
         setShowPDFMatchReview(true);
       };
 
+      const removeUploadedPDF = (filename) => {
+        setUploadedPDFs(prev => prev.filter(p => p.file.name !== filename));
+      };
+
+      const updatePDFMatch = (filename, studentId) => {
+        setUploadedPDFs(prev => prev.map(p => {
+          if (p.file.name !== filename) return p;
+
+          const matchedStudent = students.find((s) => String(s.studentId) === String(studentId) || String(s.id) === String(studentId));
+
+          return {
+            ...p,
+            studentId: studentId || null,
+            student: matchedStudent || null,
+            method: studentId ? 'Manual Selection' : 'Unmatched'
+          };
+        }));
+      };
+
       // Copy selection to clipboard
       const copySelectionToClipboard = () => {
         if (selectedRow !== null) {
@@ -925,10 +944,16 @@
         return filtered;
       };
 
+      const micSupported = !!(navigator?.mediaDevices?.getUserMedia && window.MediaRecorder);
+
       const startRecording = async () => {
         try {
-          if (!navigator?.mediaDevices?.getUserMedia) {
-            throw new Error('Browser does not support microphone access.');
+          if (!micSupported) {
+            throw new Error('Browser does not support microphone recording.');
+          }
+
+          if (isRecording) {
+            return;
           }
 
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -955,6 +980,10 @@
         if (!mediaStreamRef.current) return false;
 
         try {
+          if (typeof MediaRecorder === 'undefined') {
+            throw new Error('MediaRecorder is unavailable in this browser.');
+          }
+
           const recorder = new MediaRecorder(mediaStreamRef.current, { mimeType: 'audio/webm' });
           mediaRecorderRef.current = recorder;
           currentRecordingChunksRef.current = [];
@@ -998,12 +1027,7 @@
       const stopRecording = async () => {
         if (!isRecording) return;
 
-        try {
-          await sendChunkToWebhook({ startNextSegment: false });
-        } catch (err) {
-          console.error('Error stopping recording:', err);
-          setMicError('Recording error. Please try again.');
-        } finally {
+        const cleanUpMedia = () => {
           if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
             try { mediaRecorderRef.current.stop(); } catch { }
           }
@@ -1013,12 +1037,33 @@
           }
 
           mediaRecorderRef.current = null;
+        };
+
+        try {
+          await sendChunkToWebhook({ startNextSegment: false });
+        } catch (err) {
+          console.error('Error stopping recording:', err);
+          setMicError('Recording error. Please try again.');
+        } finally {
+          cleanUpMedia();
           setIsRecording(false);
           setIsPaused(false);
 
           console.log('Recording stopped.');
         }
       };
+
+      // Stop media devices if user navigates away from grading view
+      useEffect(() => {
+        return () => {
+          if (mediaStreamRef.current) {
+            mediaStreamRef.current.getTracks().forEach(track => track.stop());
+          }
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            try { mediaRecorderRef.current.stop(); } catch { }
+          }
+        };
+      }, []);
 
       const downloadRecording = (recordingData) => {
         const url = URL.createObjectURL(recordingData.blob);
@@ -2779,6 +2824,81 @@
                 </div>
               </div>
             )}
+
+            {showPDFMatchReview && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-lg max-w-3xl w-full max-h-[85vh] overflow-hidden flex flex-col shadow-xl">
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-pacifica-gray">
+                    <div>
+                      <h2 className="text-xl font-semibold text-pacifica-navy">Review PDF Matches</h2>
+                      <p className="text-sm text-pacifica-slate">Confirm or adjust which student each PDF belongs to.</p>
+                    </div>
+                    <button
+                      onClick={() => setShowPDFMatchReview(false)}
+                      className="p-2 rounded-lg hover:bg-pacifica-gray hover:bg-opacity-30"
+                    >
+                      <Icon name="X" className="w-5 h-5 text-pacifica-navy" />
+                    </button>
+                  </div>
+
+                  <div className="p-6 overflow-y-auto space-y-3 flex-1">
+                    {uploadedPDFs.length === 0 ? (
+                      <p className="text-sm text-pacifica-slate">No PDFs uploaded yet.</p>
+                    ) : (
+                      uploadedPDFs.map((pdf) => {
+                        const matchedStudent = students.find((s) => String(s.studentId) === String(pdf.studentId));
+
+                        return (
+                          <div key={pdf.file.name} className="border border-pacifica-gray rounded-lg p-4">
+                            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                              <div>
+                                <p className="font-semibold text-pacifica-navy break-all">{pdf.file.name}</p>
+                                <p className="text-xs text-pacifica-slate">Match method: {pdf.method}</p>
+                                {matchedStudent && (
+                                  <p className="text-xs text-green-700 mt-1 flex items-center gap-1">
+                                    <Icon name="CheckCircle" className="w-4 h-4" />
+                                    {matchedStudent.name} (ID: {matchedStudent.studentId})
+                                  </p>
+                                )}
+                                {!matchedStudent && pdf.method === 'Unmatched' && (
+                                  <p className="text-xs text-red-600 mt-1">No student matched yet.</p>
+                                )}
+                              </div>
+                              <button
+                                onClick={() => removeUploadedPDF(pdf.file.name)}
+                                className="self-start px-3 py-1 text-sm bg-red-50 text-red-600 rounded-lg hover:bg-red-100"
+                              >
+                                Remove
+                              </button>
+                            </div>
+
+                            <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-2">
+                              <span className="text-sm text-pacifica-slate sm:w-32">Assign to</span>
+                              <select
+                                value={pdf.studentId || ''}
+                                onChange={(e) => updatePDFMatch(pdf.file.name, e.target.value || null)}
+                                className="flex-1 px-3 py-2 border border-pacifica-gray rounded-lg text-pacifica-navy focus:ring-2 focus:ring-pacifica-orange focus:outline-none"
+                              >
+                                <option value="">Unmatched</option>
+                                {students.map((s) => (
+                                  <option key={s.id} value={s.studentId}>
+                                    {s.name} (ID: {s.studentId})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  <div className="px-6 py-4 border-t border-pacifica-gray flex justify-end gap-2">
+                    <button className="btn" onClick={() => setShowPDFMatchReview(false)}>Close</button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         );
       }
@@ -2795,7 +2915,7 @@
       const prevStudent = currentIndex > 0 ? studentList[currentIndex - 1] : null;
       const nextStudent = currentIndex !== -1 && currentIndex < studentList.length - 1 ? studentList[currentIndex + 1] : null;
       const pdfMatch = currentGradingStudent
-        ? uploadedPDFs.find((p) => p.studentId === currentGradingStudent.studentId && p.method !== 'Unmatched')
+        ? uploadedPDFs.find((p) => String(p.studentId) === String(currentGradingStudent.studentId) && p.method !== 'Unmatched')
         : null;
 
       const renderVoiceContent = (isSidebar) => {
@@ -2903,6 +3023,12 @@
                         Reset
                       </button>
                     </div>
+
+                    {micError && (
+                      <div className="w-full p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                        {micError}
+                      </div>
+                    )}
                   </div>
                 </div>
 
