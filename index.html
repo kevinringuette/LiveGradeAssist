@@ -3517,8 +3517,23 @@
                   <table className="w-full border-collapse">
                     <thead className="bg-pacifica-gray bg-opacity-20 sticky top-0">
                       <tr>
+                        <th className="px-4 py-3 text-center text-xs font-semibold text-pacifica-navy border-b-2 border-pacifica-gray sticky left-0 bg-pacifica-gray bg-opacity-20 z-10 w-16">
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 text-pacifica-orange rounded cursor-pointer"
+                            checked={students.filter(s => grades[s.id]?.completed).length > 0 && students.filter(s => grades[s.id]?.completed).every(s => selectedEmailStudentIds.includes(s.id))}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                selectAllEmailRecipients();
+                              } else {
+                                clearEmailRecipients();
+                              }
+                            }}
+                            title="Select all graded students for email"
+                          />
+                        </th>
                         <th
-                          className={`px-4 py-3 text-left text-xs font-semibold text-pacifica-navy border-b-2 border-pacifica-gray sticky left-0 bg-pacifica-gray bg-opacity-20 z-10 cursor-pointer hover:bg-pacifica-orange hover:bg-opacity-20 ${selectedColumn === 0 ? 'bg-pacifica-orange bg-opacity-30' : ''}`}
+                          className={`px-4 py-3 text-left text-xs font-semibold text-pacifica-navy border-b-2 border-pacifica-gray sticky left-16 bg-pacifica-gray bg-opacity-20 z-10 cursor-pointer hover:bg-pacifica-orange hover:bg-opacity-20 ${selectedColumn === 0 ? 'bg-pacifica-orange bg-opacity-30' : ''}`}
                           onClick={() => {
                             setSelectedColumn(selectedColumn === 0 ? null : 0);
                             setSelectedRow(null);
@@ -3573,8 +3588,19 @@
                             key={student.id}
                             className={`border-b border-pacifica-gray hover:bg-pacifica-orange hover:bg-opacity-5 ${sg.completed ? 'bg-green-50 bg-opacity-50' : ''} ${selectedRow === rowIdx ? 'bg-pacifica-orange bg-opacity-20' : isSelected ? 'bg-pacifica-orange bg-opacity-10' : ''}`}
                           >
+                            <td className="px-4 py-3 text-center sticky left-0 bg-white border-r border-pacifica-gray">
+                              <input
+                                type="checkbox"
+                                className="w-4 h-4 text-pacifica-orange rounded cursor-pointer"
+                                disabled={!sg.completed}
+                                checked={sg.completed && selectedEmailStudentIds.includes(student.id)}
+                                onChange={() => handleEmailRecipientToggle(student.id)}
+                                onClick={(e) => e.stopPropagation()}
+                                title={sg.completed ? "Select for email" : "Complete grading to select for email"}
+                              />
+                            </td>
                             <td
-                              className={`px-4 py-3 sticky left-0 bg-white border-r border-pacifica-gray cursor-pointer hover:bg-pacifica-orange hover:bg-opacity-20 ${selectedRow === rowIdx ? 'bg-pacifica-orange bg-opacity-30' : selectedColumn === 0 ? 'bg-pacifica-orange bg-opacity-15' : ''}`}
+                              className={`px-4 py-3 sticky left-16 bg-white border-r border-pacifica-gray cursor-pointer hover:bg-pacifica-orange hover:bg-opacity-20 ${selectedRow === rowIdx ? 'bg-pacifica-orange bg-opacity-30' : selectedColumn === 0 ? 'bg-pacifica-orange bg-opacity-15' : ''}`}
                               onClick={() => {
                                 setSelectedRow(selectedRow === rowIdx ? null : rowIdx);
                                 setSelectedColumn(null);
@@ -3721,70 +3747,6 @@
                       })}
                     </tbody>
                   </table>
-                </div>
-              </div>
-
-              <div className="bg-white rounded-lg shadow-md border border-pacifica-gray p-6 mb-6">
-                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-4">
-                  <div>
-                    <h2 className="text-lg font-semibold text-pacifica-navy">Choose Students for Email Drafts</h2>
-                    <p className="text-sm text-pacifica-slate">Only graded students can receive an email draft.</p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={selectAllEmailRecipients}
-                      className="btn btn-outline"
-                      disabled={students.filter(s => grades[s.id]?.completed).length === 0}
-                    >
-                      Select All Graded
-                    </button>
-                    <button
-                      type="button"
-                      onClick={clearEmailRecipients}
-                      className="btn btn-outline"
-                      disabled={selectedEmailStudentIds.length === 0}
-                    >
-                      Clear Selection
-                    </button>
-                  </div>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  {students.map(student => {
-                    const gradeRecord = grades[student.id] || {};
-                    const graded = !!gradeRecord.completed;
-                    const totalScore = graded
-                      ? rubricItems.reduce((sum, item) => sum + (gradeRecord.scores?.[item.name] || 0), 0)
-                      : null;
-                    const checked = graded && selectedEmailStudentIds.includes(student.id);
-                    return (
-                      <label
-                        key={student.id}
-                        className={`flex items-center justify-between gap-3 border rounded-lg px-4 py-3 transition ${graded
-                          ? checked
-                            ? 'border-pacifica-orange bg-pacifica-orange/10 shadow-sm'
-                            : 'border-pacifica-gray hover:border-pacifica-orange hover:bg-pacifica-orange/10'
-                          : 'border-pacifica-gray bg-gray-50 opacity-60 cursor-not-allowed'
-                          }`}
-                      >
-                        <div className="min-w-0">
-                          <p className="font-semibold text-pacifica-navy truncate">{student.name}</p>
-                          <p className="text-xs text-pacifica-slate truncate">
-                            {graded
-                              ? `Graded • ${totalScore}/${maxTotal}`
-                              : 'Not graded yet'}
-                          </p>
-                        </div>
-                        <input
-                          type="checkbox"
-                          className="w-5 h-5 text-pacifica-orange rounded"
-                          disabled={!graded}
-                          checked={checked}
-                          onChange={() => handleEmailRecipientToggle(student.id)}
-                        />
-                      </label>
-                    );
-                  })}
                 </div>
               </div>
 
